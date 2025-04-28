@@ -9,6 +9,8 @@ import time
 import logging
 import serpent
 import contextlib
+from typing import Any
+from collections import defaultdict
 from . import config, core, serializers, protocol, errors, socketutil
 from .callcontext import current_context
 try:
@@ -626,6 +628,44 @@ class BatchProxy(object):
         results = self.__proxy._pyroInvokeBatch(self.__calls)
         self.__calls = []  # clear for re-use
         return self.__resultsgenerator(results)
+    
+
+class ConcurrentProxy(Proxy):
+    """
+    Proxy for remote python objects. The `Proxy` must be explicitly passed across threads. This class handles automatically
+    creating new proxies for the current thread when necessary.
+    """
+
+    OBJECT_THREAD_MAP: dict[core.URI, dict[Any, "ConcurrentProxy"]] = defaultdict(dict)
+
+    def __init__(self, uri: str, **kwargs):
+        super().__init__(uri, **kwargs)
+        ConcurrentProxy.OBJECT_THREAD_MAP[self._pyroUri][get_ident()] = self
+
+    def _pyroInvoke(self, methodname, vargs, kwargs, flags=0, objectId=None):
+        proxy = self
+        if self._pyroUri in ConcurrentProxy.OBJECT_THREAD_MAP:
+            thread_map = ConcurrentProxy.OBJECT_THREAD_MAP[self._pyroUri]
+            thread_id = get_ident()
+
+            # Copy this proxy for the current thread if it doesn't
+            if thread_id not in thread_map:
+                thread_map[thread_id] = self.__copy__()
+
+            proxy = thread_map[thread_id]
+
+        return Proxy._pyroInvoke(proxy, methodname, vargs, kwargs, flags, objectId)
+
+    def __del__(self):
+        # All threads hold a referenece to this object. So this should only be called when all
+        # proxies for all threads are garbage collected.
+        try:
+            ConcurrentProxy.OBJECT_THREAD_MAP.pop(self._pyroUri, None)
+            super().__del__()
+        except Exception:
+            pass
+
+
 
 
 class SerializedBlob(object):
