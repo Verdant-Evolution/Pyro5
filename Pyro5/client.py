@@ -9,7 +9,7 @@ import time
 import logging
 import serpent
 import contextlib
-from typing import Any
+from threading import local
 from collections import defaultdict
 from . import config, core, serializers, protocol, errors, socketutil
 from .callcontext import current_context
@@ -630,44 +630,23 @@ class BatchProxy(object):
         self.__calls = []  # clear for re-use
         return self.__resultsgenerator(results)
     
-
 class ConcurrentProxy(Proxy):
     """
     Proxy for remote python objects. The `Proxy` must be explicitly passed across threads. This class handles automatically
     creating new proxies for the current thread when necessary.
     """
-
-    OBJECT_THREAD_MAP: dict[core.URI, dict[Any, "ConcurrentProxy"]] = defaultdict(dict)
-
+    THREAD_PROXY_MAP = defaultdict(local)
     def __init__(self, uri: str, **kwargs):
         super().__init__(uri, **kwargs)
-        ConcurrentProxy.OBJECT_THREAD_MAP[self._pyroUri][get_ident()] = self
+        ConcurrentProxy.THREAD_PROXY_MAP[self._pyroUri].proxy = self
 
     def _pyroInvoke(self, methodname, vargs, kwargs, flags=0, objectId=None):
-        proxy = self
-        if self._pyroUri in ConcurrentProxy.OBJECT_THREAD_MAP:
-            thread_map = ConcurrentProxy.OBJECT_THREAD_MAP[self._pyroUri]
-            thread_id = get_ident()
-
-            # Copy this proxy for the current thread if it doesn't
-            if thread_id not in thread_map:
-                thread_map[thread_id] = self.__copy__()
-
-            proxy = thread_map[thread_id]
-
-        return Proxy._pyroInvoke(proxy, methodname, vargs, kwargs, flags, objectId)
-
-    def __del__(self):
-        # All threads hold a referenece to this object. So this should only be called when all
-        # proxies for all threads are garbage collected.
-        try:
-            ConcurrentProxy.OBJECT_THREAD_MAP.pop(self._pyroUri, None)
-            super().__del__()
-        except Exception:
-            pass
-
-
-
+        local_data = ConcurrentProxy.THREAD_PROXY_MAP[self._pyroUri]
+        if not hasattr(local_data, "proxy"):
+            local_data.proxy = self.__copy__()
+        return Proxy._pyroInvoke(
+            local_data.proxy, methodname, vargs, kwargs, flags, objectId
+        )
 
 class SerializedBlob(object):
     """
