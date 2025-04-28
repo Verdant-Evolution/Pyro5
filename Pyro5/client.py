@@ -182,6 +182,7 @@ class Proxy(object):
     # obj.__getitem__(index)), the special methods are not looked up via __getattr__
     # for efficiency reasons; instead, their presence is checked directly.
     # Thus we need to define them here to force (remote) lookup through __getitem__.
+    def __call__(self, *args, **kwargs): return self.__getattr__('__call__')(*args, **kwargs)
     def __bool__(self): return True
     def __len__(self): return self.__getattr__('__len__')()
     def __getitem__(self, index): return self.__getattr__('__getitem__')(index)
